@@ -1,0 +1,37 @@
+Legion Discord worker — nodes77.aclclouds.com
+
+Files: /legion_discord_worker/
+  main.py, legion_api.py, report_listener.py, dossier_card.py, fonts/, .env, requirements.txt
+
+Install deps once (SSH/cron shell on host):
+  cd /legion_discord_worker
+  pip3 install -r requirements.txt
+
+Cron every 2 minutes (hosting panel):
+  */2 * * * * cd /legion_discord_worker && /usr/bin/python3 main.py --once >> worker.log 2>&1
+
+Note: main.py reads LEGION_* from environment. If cron does not load .env,
+add in panel: source /legion_discord_worker/.env before python3, or export vars manually.
+
+Systemd (if shell access available):
+  cp /legion_discord_worker/legion_discord_worker.service /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now legion_discord_worker
+
+Gateway realtime (slash commands + import on new messages):
+  python3 main.py --gateway
+
+Slash commands (guild DISCORD_GUILD_ID):
+  /login КОД     — 6 цифр из Профиля на сайте (не пароль)
+  /me            — публичная CRT-карточка досье (аватар, звание, баллы, отчёты)
+  /who @игрок    — то же досье, но чужое
+  /gear          — доска готовности + кнопка списка (готовые сверху) → карточка loadout
+  /gear @игрок   — карточка loadout конкретного бойца
+  /wholegion     — баннер взвода (командир, состав, норма)
+  /balls         — коротко только баллы
+  /week          — сводка кто сдал / не сдал (ЯДРО / КМД / TERM.S)
+  /giveballs @игрок N — выдать баллы (ЯДРО / TERM.S / КОМАНДНЫЙ)
+  /setrank @игрок звание — сменить звание с сайта (нужна привязка /login)
+
+On Pterodactyl set the startup command to gateway so slash commands stay online.
+Cron --once can remain as a backup import.

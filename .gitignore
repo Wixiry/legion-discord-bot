@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+!config.example.env
+!ACLClouds.env.example
+__pycache__/
+*.py[cod]
+*.pyo
+.acl-python/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
