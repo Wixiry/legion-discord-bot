@@ -20,20 +20,55 @@ ROOT = Path(__file__).resolve().parent
 
 
 def load_dotenv(path: Path | None = None) -> None:
-    """Load KEY=VALUE lines from .env next to main.py (no extra deps)."""
-    if path is None:
-        path = ROOT / '.env'
-    if not path.is_file():
-        return
-    for line in path.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line:
+    """Load .env (Bothost checks python-dotenv; keep a tiny fallback)."""
+    candidates = []
+    if path is not None:
+        candidates.append(Path(path))
+    else:
+        candidates.append(ROOT / '.env')
+        candidates.append(Path.cwd() / '.env')
+        candidates.append(Path('/app/.env'))
+        data_dir = os.environ.get('DATA_DIR', '').strip()
+        if data_dir:
+            candidates.append(Path(data_dir) / '.env')
+    seen = set()
+    unique = []
+    for p in candidates:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
             continue
-        key, val = line.split('=', 1)
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+        seen.add(key)
+        unique.append(p)
+    try:
+        from dotenv import load_dotenv as _load
+        for p in unique:
+            _load(p, override=False)
+    except ImportError:
+        for p in unique:
+            if not p.is_file():
+                continue
+            for line in p.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, val = line.split('=', 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    _apply_env_aliases()
+
+
+def _apply_env_aliases() -> None:
+    if not os.environ.get('DISCORD_BOT_TOKEN', '').strip():
+        for name in ('TOKEN', 'BOT_TOKEN', 'DISCORD_TOKEN'):
+            val = os.environ.get(name, '').strip()
+            if val:
+                os.environ['DISCORD_BOT_TOKEN'] = val
+                break
 
 
 def ensure_deps() -> None:
@@ -51,6 +86,10 @@ def ensure_deps() -> None:
         from PIL import Image  # noqa: F401
     except ImportError:
         missing.append('Pillow')
+    try:
+        import dotenv  # noqa: F401
+    except ImportError:
+        missing.append('python-dotenv')
     if not missing:
         return
 

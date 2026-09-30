@@ -1,4 +1,10 @@
-"""Gateway entry for ACLClouds: PY_FILE=start_gateway.py"""
+"""Gateway entry for Bothost / ACLClouds: CMD python start_gateway.py"""
+try:
+    from dotenv import load_dotenv as _dotenv_load
+    _dotenv_load()
+except ImportError:
+    pass
+
 from main import ensure_deps, load_dotenv
 
 load_dotenv()
