@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from io import BytesIO
 
 import discord
@@ -19,7 +20,7 @@ from terminal_msg import banner_bytes, reply_terminal, score_markdown, send_term
 
 log = logging.getLogger('legion.report_listener')
 
-BOT_BUILD = '20261003-unwarn'
+BOT_BUILD = '20261003-acfix'
 DEFAULT_GUILD_ID = 1356571925069037588
 
 CRT_RED = 0xC81010
@@ -319,6 +320,7 @@ class LegionBot(commands.Bot):
             log.exception('guild slash sync failed for %s', guild_id)
         if not self.expire_warns_loop.is_running():
             self.expire_warns_loop.start()
+        asyncio.create_task(_cached_rank_rows(self))
 
     async def on_ready(self):
         log.info('Gateway ready as %s, watching %d channels', self.user, len(self.channel_ids))
@@ -371,6 +373,38 @@ class LegionBot(commands.Bot):
 def _api_call(bot: LegionBot, fn, *args, **kwargs):
     loop = asyncio.get_running_loop()
     return loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+
+async def _api_call_fast(bot: LegionBot, fn, *args, timeout: float = 1.5, **kwargs):
+    try:
+        return await asyncio.wait_for(_api_call(bot, fn, *args, **kwargs), timeout=timeout)
+    except Exception:
+        return {}
+
+
+async def _cached_rank_rows(bot: LegionBot) -> list[tuple[str, str, bool]]:
+    now = time.monotonic()
+    cache = getattr(bot, '_rank_ac_cache', None)
+    if isinstance(cache, tuple) and len(cache) == 2 and (now - cache[0]) < 90:
+        return cache[1]
+    out = await _api_call_fast(bot, bot.api.balls_ranks, timeout=1.6)
+    rows: list[tuple[str, str, bool]] = []
+    for r in (out.get('ranks') or []):
+        code = str(r.get('code') or '').strip()
+        title = str(r.get('title') or code).strip()
+        if not code:
+            continue
+        rows.append((f'{code} — {title}', code, bool(r.get('custom'))))
+    if rows:
+        bot._rank_ac_cache = (now, rows)
+        return rows
+    if cache and cache[1]:
+        return cache[1]
+    return [(name, code, False) for name, code in RANK_FALLBACK]
+
+
+def _invalidate_rank_cache(bot: LegionBot) -> None:
+    bot._rank_ac_cache = None
 
 
 async def _avatar_bytes(user: discord.abc.User) -> bytes | None:
@@ -754,21 +788,13 @@ def register_slash(bot: LegionBot) -> None:
 
     async def _rank_choices(bot: LegionBot, current: str = '', *, custom_only: bool = False) -> list[app_commands.Choice[str]]:
         cur = (current or '').strip().lower()
-        rows: list[tuple[str, str]] = []
         try:
-            out = await _api_call(bot, bot.api.balls_ranks)
-            for r in (out.get('ranks') or []):
-                code = str(r.get('code') or '').strip()
-                title = str(r.get('title') or code).strip()
-                if not code:
-                    continue
-                if custom_only and not r.get('custom'):
-                    continue
-                rows.append((f'{code} — {title}', code))
+            raw = await _cached_rank_rows(bot)
         except Exception:
-            rows = []
-        if not rows:
-            rows = list(RANK_FALLBACK)
+            raw = [(name, code, False) for name, code in RANK_FALLBACK]
+        rows = [(name, code) for name, code, custom in raw if (not custom_only or custom)]
+        if custom_only and not rows:
+            rows = [(name, code) for name, code, _custom in raw]
         if cur:
             rows = [p for p in rows if cur in p[0].lower() or cur in p[1].lower()]
         return [app_commands.Choice(name=name[:100], value=code) for name, code in rows[:25]]
@@ -887,6 +913,7 @@ def register_slash(bot: LegionBot) -> None:
         if not out.get('ok'):
             await _term_fail(interaction, str(out.get('error') or 'Не сохранено'))
             return
+        _invalidate_rank_cache(bot)
         verb = 'создано' if out.get('created') else 'обновлено'
         await _term_ok(
             interaction,
@@ -913,6 +940,7 @@ def register_slash(bot: LegionBot) -> None:
         if not out.get('ok'):
             await _term_fail(interaction, str(out.get('error') or 'Не сохранено'))
             return
+        _invalidate_rank_cache(bot)
         await _term_ok(
             interaction,
             title='ПОРОГ ЗВАНИЯ',
@@ -938,6 +966,7 @@ def register_slash(bot: LegionBot) -> None:
         if not out.get('ok'):
             await _term_fail(interaction, str(out.get('error') or 'Не удалено'))
             return
+        _invalidate_rank_cache(bot)
         await _term_ok(interaction, title='ЗВАНИЕ СНЯТО', extra=f'Удалено **{rank}**.', kind='review_no')
 
     @bot.tree.command(name='rankdel', description='Удалить добавленное звание (не штатную лестницу)')
@@ -951,10 +980,7 @@ def register_slash(bot: LegionBot) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        choices = await _rank_choices(bot, current, custom_only=True)
-        if choices:
-            return choices
-        return await _rank_choices(bot, current)
+        return await _rank_choices(bot, current, custom_only=True)
 
     @bot.tree.command(name='delrank', description='Удалить добавленное звание (список как у /setrank)')
     @app_commands.default_permissions(manage_roles=True)
@@ -967,10 +993,7 @@ def register_slash(bot: LegionBot) -> None:
         interaction: discord.Interaction,
         current: str,
     ) -> list[app_commands.Choice[str]]:
-        choices = await _rank_choices(bot, current, custom_only=True)
-        if choices:
-            return choices
-        return await _rank_choices(bot, current)
+        return await _rank_choices(bot, current, custom_only=True)
 
     @bot.tree.command(name='warn', description='Выдать варн ролью Discord и записать на сайт')
     @app_commands.default_permissions(manage_roles=True)
@@ -1069,8 +1092,25 @@ def register_slash(bot: LegionBot) -> None:
             pid = str(getattr(player, 'id', '') or '')
         rows: list[tuple[str, str]] = list(extra or [])
         if pid:
-            out = await _warns_for_player(bot, str(interaction.user.id), pid)
-            pack = (out.get('pack') or {}) if out.get('ok') else {}
+            cache_key = f'{pid}:{bucket}'
+            now = time.monotonic()
+            wcache = getattr(bot, '_warn_ac_cache', None)
+            if not isinstance(wcache, dict):
+                wcache = {}
+                bot._warn_ac_cache = wcache
+            hit = wcache.get(cache_key)
+            if hit and (now - hit[0]) < 20:
+                pack = hit[1]
+            else:
+                out = await _api_call_fast(
+                    bot,
+                    bot.api.balls_warn_list,
+                    timeout=1.4,
+                    actor_discord_id=str(interaction.user.id),
+                    target_discord_id=pid,
+                )
+                pack = (out.get('pack') or {}) if out.get('ok') else {}
+                wcache[cache_key] = (now, pack)
             for r in (pack.get(bucket) or []):
                 wid = str(r.get('id') or '').strip()
                 if not wid:

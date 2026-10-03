@@ -18,7 +18,7 @@ class LegionApi:
         self.write_token = write_token or os.environ.get('LEGION_WRITE_TOKEN', '')
         self.timeout = timeout
 
-    def _request(self, path: str, body: dict | None = None, method: str = 'GET') -> dict:
+    def _request(self, path: str, body: dict | None = None, method: str = 'GET', timeout: int | None = None) -> dict:
         url = f'{self.base_url}/{path.lstrip("/")}'
         data = json.dumps(body).encode('utf-8') if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
@@ -26,7 +26,7 @@ class LegionApi:
         if self.write_token:
             req.add_header('X-Legion-Token', self.write_token)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout if timeout is None else timeout) as resp:
                 raw = resp.read().decode('utf-8', errors='replace')
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
@@ -37,6 +37,8 @@ class LegionApi:
                 payload = {'ok': False, 'error': raw[:500], 'httpCode': e.code}
             payload['httpCode'] = e.code
             return payload
+        except Exception as e:
+            return {'ok': False, 'error': str(e)[:400]}
 
     def site_status(self) -> dict:
         return self._request('site_status.php')
@@ -149,7 +151,7 @@ class LegionApi:
         return self._request('balls.php', body, method='POST')
 
     def balls_ranks(self) -> dict:
-        return self._request('balls.php', {'action': 'ranks'}, method='POST')
+        return self._request('balls.php', {'action': 'ranks'}, method='POST', timeout=4)
 
     def balls_setrank(
         self,
