@@ -736,7 +736,7 @@ def register_slash(bot: LegionBot) -> None:
         except Exception:
             pass
 
-    async def _rank_choices(bot: LegionBot, current: str = '') -> list[app_commands.Choice[str]]:
+    async def _rank_choices(bot: LegionBot, current: str = '', *, custom_only: bool = False) -> list[app_commands.Choice[str]]:
         cur = (current or '').strip().lower()
         rows: list[tuple[str, str]] = []
         try:
@@ -745,6 +745,8 @@ def register_slash(bot: LegionBot) -> None:
                 code = str(r.get('code') or '').strip()
                 title = str(r.get('title') or code).strip()
                 if not code:
+                    continue
+                if custom_only and not r.get('custom'):
                     continue
                 rows.append((f'{code} — {title}', code))
         except Exception:
@@ -909,10 +911,7 @@ def register_slash(bot: LegionBot) -> None:
     ) -> list[app_commands.Choice[str]]:
         return await _rank_choices(bot, current)
 
-    @bot.tree.command(name='rankdel', description='Удалить добавленное звание (не штатную лестницу)')
-    @app_commands.default_permissions(manage_roles=True)
-    @app_commands.describe(rank='Код добавленного звания')
-    async def rankdel_cmd(interaction: discord.Interaction, rank: str):
+    async def _do_rankdel(interaction: discord.Interaction, rank: str) -> None:
         await interaction.response.defer(ephemeral=True)
         out = await _api_call(
             bot,
@@ -924,6 +923,38 @@ def register_slash(bot: LegionBot) -> None:
             await _term_fail(interaction, str(out.get('error') or 'Не удалено'))
             return
         await _term_ok(interaction, title='ЗВАНИЕ СНЯТО', extra=f'Удалено **{rank}**.', kind='review_no')
+
+    @bot.tree.command(name='rankdel', description='Удалить добавленное звание (не штатную лестницу)')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(rank='Звание с сайта (начните вводить для поиска)')
+    async def rankdel_cmd(interaction: discord.Interaction, rank: str):
+        await _do_rankdel(interaction, rank)
+
+    @rankdel_cmd.autocomplete('rank')
+    async def rankdel_rank_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        choices = await _rank_choices(bot, current, custom_only=True)
+        if choices:
+            return choices
+        return await _rank_choices(bot, current)
+
+    @bot.tree.command(name='delrank', description='Удалить добавленное звание (список как у /setrank)')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(rank='Звание с сайта (начните вводить для поиска)')
+    async def delrank_cmd(interaction: discord.Interaction, rank: str):
+        await _do_rankdel(interaction, rank)
+
+    @delrank_cmd.autocomplete('rank')
+    async def delrank_rank_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        choices = await _rank_choices(bot, current, custom_only=True)
+        if choices:
+            return choices
+        return await _rank_choices(bot, current)
 
     @bot.tree.command(name='warn', description='Выдать варн ролью Discord и записать на сайт')
     @app_commands.default_permissions(manage_roles=True)
