@@ -323,6 +323,11 @@ class LegionBot(commands.Bot):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
+        try:
+            if message.is_system():
+                return
+        except Exception:
+            pass
         cid = str(message.channel.id)
         parent = getattr(message.channel, 'parent_id', None)
         watch = cid in self.channel_ids or (parent is not None and str(parent) in self.channel_ids)

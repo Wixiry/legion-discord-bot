@@ -203,6 +203,8 @@ async def handle_review_click(api: LegionApi, interaction: discord.Interaction, 
 async def post_review_bars(message: discord.Message, imported: list) -> None:
     if not imported or not isinstance(imported, list):
         return
+    if _is_system_message(message):
+        return
     mid = str(message.id)
     chan = str(message.channel.id)
     parent = getattr(message.channel, 'parent_id', None)
@@ -224,10 +226,41 @@ async def post_review_bars(message: discord.Message, imported: list) -> None:
         seen.add(bar_id)
         typ = TYPE_RU.get(str(item.get('type') or ''), 'отчёт')
         try:
-            await message.reply(
+            await _send_review_bar(
+                message,
                 content=f'◈ РАЗБОР · {typ} · терминал LEGION',
                 view=make_review_view(bar_id),
-                mention_author=False,
             )
         except Exception:
             log.exception('failed to post review bar for %s', bar_id)
+
+
+def _is_system_message(message: discord.Message) -> bool:
+    try:
+        if message.is_system():
+            return True
+    except Exception:
+        pass
+    allowed = (discord.MessageType.default, discord.MessageType.reply)
+    try:
+        allowed = allowed + (discord.MessageType.chat_input_command,)
+    except AttributeError:
+        pass
+    msg_type = getattr(message, 'type', None)
+    return msg_type is not None and msg_type not in allowed
+
+
+async def _send_review_bar(message: discord.Message, *, content: str, view: discord.ui.View) -> None:
+    dest = message.channel
+    thread = getattr(message, 'thread', None)
+    if thread is not None:
+        dest = thread
+        await dest.send(content=content, view=view)
+        return
+    if not _is_system_message(message):
+        try:
+            await message.reply(content=content, view=view, mention_author=False)
+            return
+        except discord.HTTPException as exc:
+            log.warning('review bar reply skipped (%s); sending without reference', exc)
+    await dest.send(content=content, view=view)
