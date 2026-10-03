@@ -19,6 +19,9 @@ from terminal_msg import banner_bytes, reply_terminal, score_markdown, send_term
 
 log = logging.getLogger('legion.report_listener')
 
+BOT_BUILD = '20261003-delrank'
+DEFAULT_GUILD_ID = 1356571925069037588
+
 CRT_RED = 0xC81010
 CRT_DIM = 0x6E0A0A
 
@@ -294,13 +297,26 @@ class LegionBot(commands.Bot):
             log.exception('warn expire failed')
 
     async def setup_hook(self) -> None:
-        if self.guild_id:
-            guild = discord.Object(id=self.guild_id)
+        log.info('bot build %s', BOT_BUILD)
+        names = [c.name for c in self.tree.get_commands()]
+        log.info('tree commands: %s', ', '.join(names))
+        guild_id = self.guild_id or DEFAULT_GUILD_ID
+        guild = discord.Object(id=guild_id)
+        try:
+            self.tree.clear_commands(guild=guild)
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
-        else:
-            synced = await self.tree.sync()
-        log.info('Slash commands synced: %s', len(synced))
+            log.info(
+                'Guild slash sync %s (%s): %s',
+                guild_id,
+                len(synced),
+                ', '.join(f'/{c.name}' for c in synced),
+            )
+            for c in synced:
+                if c.name in ('ranknew', 'delrank', 'rankdel', 'setrank'):
+                    log.info('  /%s — %s', c.name, (c.description or '')[:120])
+        except Exception:
+            log.exception('guild slash sync failed for %s', guild_id)
         if not self.expire_warns_loop.is_running():
             self.expire_warns_loop.start()
 
@@ -1138,7 +1154,8 @@ def run_gateway(api: LegionApi) -> None:
     if not channel_map:
         log.warning('DISCORD_REPORT_CHANNELS empty — import on message disabled, slash commands still run')
     guild_raw = os.environ.get('DISCORD_GUILD_ID', '').strip()
-    guild_id = int(guild_raw) if guild_raw.isdigit() else None
+    guild_id = int(guild_raw) if guild_raw.isdigit() else DEFAULT_GUILD_ID
+    log.info('gateway guild_id=%s build=%s', guild_id, BOT_BUILD)
     bot = LegionBot(api, set(channel_map.keys()), guild_id=guild_id)
     register_slash(bot)
     bot.run(token, log_handler=None)
