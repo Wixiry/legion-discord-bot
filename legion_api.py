@@ -252,17 +252,54 @@ class LegionApi:
             method='POST',
         )
 
-    def balls_warn_clear(self, *, actor_discord_id: str, login: str, warn_id: str) -> dict:
-        return self._request(
-            'balls.php',
-            {
-                'action': 'warn_clear',
-                'actorDiscordId': actor_discord_id,
-                'login': login,
-                'id': warn_id,
-            },
-            method='POST',
-        )
+    def balls_warn_clear(
+        self,
+        *,
+        actor_discord_id: str,
+        target_discord_id: str = '',
+        login: str = '',
+        warn_id: str = '',
+        reason: str = 'Снят',
+    ) -> dict:
+        body = {
+            'action': 'warn_clear',
+            'actorDiscordId': actor_discord_id,
+            'reason': reason,
+        }
+        if target_discord_id:
+            body['targetDiscordId'] = target_discord_id
+        if login:
+            body['login'] = login
+        if warn_id:
+            body['id'] = warn_id
+        return self._request('balls.php', body, method='POST')
+
+    def balls_warn_list(self, *, actor_discord_id: str, target_discord_id: str = '', login: str = '') -> dict:
+        body = {'action': 'warn_list', 'actorDiscordId': actor_discord_id}
+        if target_discord_id:
+            body['targetDiscordId'] = target_discord_id
+        if login:
+            body['login'] = login
+        return self._request('balls.php', body, method='POST')
+
+    def balls_warn_archive_clear(
+        self,
+        *,
+        actor_discord_id: str,
+        target_discord_id: str = '',
+        login: str = '',
+        warn_id: str = 'ALL',
+    ) -> dict:
+        body = {
+            'action': 'warn_archive_clear',
+            'actorDiscordId': actor_discord_id,
+            'id': warn_id or 'ALL',
+        }
+        if target_discord_id:
+            body['targetDiscordId'] = target_discord_id
+        if login:
+            body['login'] = login
+        return self._request('balls.php', body, method='POST')
 
     def balls_warn_expire(self) -> dict:
         return self._request('balls.php', {'action': 'warn_expire'}, method='POST')

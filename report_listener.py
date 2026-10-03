@@ -19,7 +19,7 @@ from terminal_msg import banner_bytes, reply_terminal, score_markdown, send_term
 
 log = logging.getLogger('legion.report_listener')
 
-BOT_BUILD = '20261003-delrank'
+BOT_BUILD = '20261003-unwarn'
 DEFAULT_GUILD_ID = 1356571925069037588
 
 CRT_RED = 0xC81010
@@ -1032,6 +1032,170 @@ def register_slash(bot: LegionBot) -> None:
                 accent=CRT_RED,
                 mention_ids=[str(player.id)],
             )
+
+    def _fmt_warn_row(row: dict) -> str:
+        date = str(row.get('date') or row.get('archivedAt') or '—')
+        label = str(row.get('label') or row.get('level') or '')
+        text = str(row.get('text') or '').strip()
+        bit = f'{date} · {label}'
+        if text:
+            bit += f' · {text}'
+        return bit
+
+    async def _warns_for_player(bot: LegionBot, actor_id: str, player_id: str) -> dict:
+        return await _api_call(
+            bot,
+            bot.api.balls_warn_list,
+            actor_discord_id=actor_id,
+            target_discord_id=player_id,
+        )
+
+    async def _warn_choice_list(
+        bot: LegionBot,
+        interaction: discord.Interaction,
+        current: str,
+        bucket: str,
+        *,
+        extra: list[tuple[str, str]] | None = None,
+    ) -> list[app_commands.Choice[str]]:
+        cur = (current or '').strip().lower()
+        player = None
+        try:
+            player = interaction.namespace.player
+        except Exception:
+            player = None
+        pid = ''
+        if player is not None:
+            pid = str(getattr(player, 'id', '') or '')
+        rows: list[tuple[str, str]] = list(extra or [])
+        if pid:
+            out = await _warns_for_player(bot, str(interaction.user.id), pid)
+            pack = (out.get('pack') or {}) if out.get('ok') else {}
+            for r in (pack.get(bucket) or []):
+                wid = str(r.get('id') or '').strip()
+                if not wid:
+                    continue
+                label = _fmt_warn_row(r)
+                rows.append((label[:100], wid))
+        if cur:
+            rows = [p for p in rows if cur in p[0].lower() or cur in p[1].lower()]
+        return [app_commands.Choice(name=name[:100], value=code) for name, code in rows[:25]]
+
+    @bot.tree.command(name='unwarn', description='Снять наказание: роль Discord + запись в архив на сайте')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(
+        player='Боец с /login',
+        warn='Какое наказание снять (пусто = последнее активное)',
+    )
+    async def unwarn_cmd(
+        interaction: discord.Interaction,
+        player: discord.Member,
+        warn: str = '',
+    ):
+        await interaction.response.defer(ephemeral=True)
+        out = await _api_call(
+            bot,
+            bot.api.balls_warn_clear,
+            actor_discord_id=str(interaction.user.id),
+            target_discord_id=str(player.id),
+            warn_id=str(warn or '').strip(),
+            reason='Снят',
+        )
+        if not out.get('ok'):
+            await _term_fail(interaction, str(out.get('error') or 'Не снято'))
+            return
+        entry = out.get('entry') or {}
+        line = _fmt_warn_row(entry) if entry else (warn or 'последнее')
+        extra = f'{player.mention}\n{line}\nроль снята, запись в архиве на сайте.'
+        if entry.get('level') == 'EL4':
+            extra += '\nTRAITOR / HAVOC возвращены, если снимались.'
+        await _term_ok(interaction, title='СНЯТО → АРХИВ', extra=extra, kind='review_ok')
+        if interaction.channel is not None:
+            md = score_markdown(
+                title='СНЯТИЕ ВЗЫСКАНИЯ',
+                name=player.display_name,
+                delta='архив',
+                scores=str(entry.get('level') or ''),
+                reason=str(entry.get('text') or 'Снят'),
+                actor=interaction.user.display_name,
+                mention=str(player.id),
+            )
+            await send_terminal(
+                interaction.channel,
+                markdown=md,
+                png=None,
+                filename='',
+                accent=CRT_DIM,
+                mention_ids=[str(player.id)],
+            )
+
+    @unwarn_cmd.autocomplete('warn')
+    async def unwarn_warn_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await _warn_choice_list(bot, interaction, current, 'active')
+
+    @bot.tree.command(name='unarchive', description='Архив наказаний с сайта: список + дата, очистка')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(
+        player='Боец с /login',
+        entry='Пусто = показать список. ALL = очистить весь архив, либо конкретная запись',
+    )
+    async def unarchive_cmd(
+        interaction: discord.Interaction,
+        player: discord.Member,
+        entry: str = '',
+    ):
+        await interaction.response.defer(ephemeral=True)
+        listed = await _warns_for_player(bot, str(interaction.user.id), str(player.id))
+        if not listed.get('ok'):
+            await _term_fail(interaction, str(listed.get('error') or 'Нет данных с сайта'))
+            return
+        pack = listed.get('pack') or {}
+        archive = pack.get('archive') or []
+        name = pack.get('name') or player.display_name
+        if not str(entry or '').strip():
+            if not archive:
+                await _term_ok(interaction, title='АРХИВ', extra=f'{player.mention}\nархив пуст.', kind='generic')
+                return
+            lines = [f'**{name}** · {len(archive)} в архиве']
+            for row in archive[:20]:
+                lines.append('• ' + _fmt_warn_row(row))
+            if len(archive) > 20:
+                lines.append(f'… ещё {len(archive) - 20}')
+            lines.append('\nЧтобы очистить: `/unarchive` → запись **ALL** или конкретный id.')
+            await _term_ok(interaction, title='АРХИВ НАКАЗАНИЙ', extra='\n'.join(lines), kind='generic')
+            return
+        out = await _api_call(
+            bot,
+            bot.api.balls_warn_archive_clear,
+            actor_discord_id=str(interaction.user.id),
+            target_discord_id=str(player.id),
+            warn_id=str(entry or '').strip(),
+        )
+        if not out.get('ok'):
+            await _term_fail(interaction, str(out.get('error') or 'Не очищено'))
+            return
+        removed = out.get('entries') or []
+        n = int(out.get('removed') or len(removed) or 0)
+        lines = [f'{player.mention}\nудалено из архива: **{n}**']
+        for row in removed[:12]:
+            lines.append('• ' + _fmt_warn_row(row))
+        await _term_ok(interaction, title='АРХИВ ОЧИЩЕН', extra='\n'.join(lines), kind='review_ok')
+
+    @unarchive_cmd.autocomplete('entry')
+    async def unarchive_entry_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await _warn_choice_list(
+            bot,
+            interaction,
+            current,
+            'archive',
+            extra=[('ALL — очистить весь архив', 'ALL')],
+        )
 
     @bot.tree.command(name='setnot', description='Каналы уведомлений сайта: отчёты, кодекс, операции, пейджер…')
     @app_commands.default_permissions(manage_roles=True)
