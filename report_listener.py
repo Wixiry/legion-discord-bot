@@ -45,6 +45,13 @@ WARN_ROLE_IDS = {
     '1473396551844892722': 'EL3',
     '1473396670027792507': 'EL4',
 }
+RANK_GROUP_CHOICES = [
+    app_commands.Choice(name='Младший состав', value='Младший состав'),
+    app_commands.Choice(name='Старший состав', value='Старший состав'),
+    app_commands.Choice(name='Офицерский состав', value='Офицерский состав'),
+    app_commands.Choice(name='Командный взвод', value='Командный взвод'),
+    app_commands.Choice(name='Прочее', value='Прочее'),
+]
 RANK_FALLBACK = [
     ('N.D — Штрафник', 'N.D'),
     ('XI — Рядовой', 'XI'),
@@ -823,22 +830,25 @@ def register_slash(bot: LegionBot) -> None:
     ) -> list[app_commands.Choice[str]]:
         return await _rank_choices(bot, current)
 
-    @bot.tree.command(name='ranknew', description='Создать или править звание (порог баллов). ЯДРО / КМД / TERM.S')
+    @bot.tree.command(name='ranknew', description='Создать или править звание (состав, порядок, порог). ЯДРО / КМД / TERM.S')
     @app_commands.default_permissions(manage_roles=True)
     @app_commands.describe(
-        code='Код звания, например XII или SGT',
-        title='Название (Рядовой, Капитан…)',
+        code='Код звания, например III.T или XII',
+        title='Название (Рядовой, Капитан Такучи…)',
         need='Необходимая сумма баллов + репутации',
-        group='Группа лестницы',
-        manual='Вручную, без авто-повышения',
+        group='Состав: младший / старший / офицерский / командный',
+        order='Порядок в составе: 1 = младший',
+        manual='Вручную, без авто-повышения (для спецзваний — да)',
     )
+    @app_commands.choices(group=RANK_GROUP_CHOICES)
     async def ranknew_cmd(
         interaction: discord.Interaction,
         code: str,
         title: str,
+        group: str,
+        order: int,
         need: int = 0,
-        group: str = 'Прочее',
-        manual: bool = False,
+        manual: bool = True,
     ):
         await interaction.response.defer(ephemeral=True)
         code = str(code or '').strip()
@@ -853,6 +863,7 @@ def register_slash(bot: LegionBot) -> None:
             title=str(title or '').strip(),
             need=int(need or 0),
             group=str(group or '').strip(),
+            order=int(order or 0),
             manual=bool(manual),
         )
         if not out.get('ok'):
@@ -862,7 +873,10 @@ def register_slash(bot: LegionBot) -> None:
         await _term_ok(
             interaction,
             title='ЗВАНИЕ',
-            extra=f'**{code}** — {title or code}\nпорог **{int(need or 0)}** · {verb}',
+            extra=(
+                f'**{code}** — {title or code}\n'
+                f'{group or "состав"} · порядок **{int(order or 0)}** · порог **{int(need or 0)}** · {verb}'
+            ),
             kind='review_ok',
         )
 

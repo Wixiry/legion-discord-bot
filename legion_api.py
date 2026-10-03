@@ -206,6 +206,7 @@ class LegionApi:
         title: str = '',
         need: int = 0,
         group: str = '',
+        order: int = 0,
         manual: bool = False,
     ) -> dict:
         body = {
@@ -218,6 +219,8 @@ class LegionApi:
         }
         if group:
             body['group'] = group
+        if order:
+            body['ord'] = int(order)
         return self._request('balls.php', body, method='POST')
 
     def balls_rank_delete(self, *, actor_discord_id: str, rank: str) -> dict:
