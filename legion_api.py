@@ -198,6 +198,92 @@ class LegionApi:
     def gear_roster(self) -> dict:
         return self._request('gear.php', {'action': 'roster'}, method='POST')
 
+    def balls_rank_upsert(
+        self,
+        *,
+        actor_discord_id: str,
+        rank: str,
+        title: str = '',
+        need: int = 0,
+        group: str = '',
+        manual: bool = False,
+    ) -> dict:
+        body = {
+            'action': 'rank_upsert',
+            'actorDiscordId': actor_discord_id,
+            'rank': rank,
+            'title': title,
+            'need': int(need),
+            'manual': 1 if manual else 0,
+        }
+        if group:
+            body['group'] = group
+        return self._request('balls.php', body, method='POST')
+
+    def balls_rank_delete(self, *, actor_discord_id: str, rank: str) -> dict:
+        return self._request(
+            'balls.php',
+            {'action': 'rank_delete', 'actorDiscordId': actor_discord_id, 'rank': rank},
+            method='POST',
+        )
+
+    def balls_warn_issue(
+        self,
+        *,
+        actor_discord_id: str,
+        target_discord_id: str,
+        level: str,
+        text: str = '',
+        days: int = 0,
+    ) -> dict:
+        return self._request(
+            'balls.php',
+            {
+                'action': 'warn_issue',
+                'actorDiscordId': actor_discord_id,
+                'targetDiscordId': target_discord_id,
+                'level': level,
+                'text': text,
+                'days': int(days),
+            },
+            method='POST',
+        )
+
+    def balls_warn_clear(self, *, actor_discord_id: str, login: str, warn_id: str) -> dict:
+        return self._request(
+            'balls.php',
+            {
+                'action': 'warn_clear',
+                'actorDiscordId': actor_discord_id,
+                'login': login,
+                'id': warn_id,
+            },
+            method='POST',
+        )
+
+    def balls_warn_expire(self) -> dict:
+        return self._request('balls.php', {'action': 'warn_expire'}, method='POST')
+
+    def balls_warn_sync_role(
+        self,
+        *,
+        actor_discord_id: str,
+        target_discord_id: str,
+        role_id: str,
+        added: bool,
+    ) -> dict:
+        return self._request(
+            'balls.php',
+            {
+                'action': 'warn_sync_role',
+                'actorDiscordId': actor_discord_id,
+                'targetDiscordId': target_discord_id,
+                'roleId': role_id,
+                'added': 1 if added else 0,
+            },
+            method='POST',
+        )
+
     def gear_one(self, *, login: str = '', callsign: str = '') -> dict:
         body: dict = {'action': 'one'}
         if login:

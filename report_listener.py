@@ -8,7 +8,7 @@ from io import BytesIO
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from dossier_card import render_dossier_png, render_platoon_png
 from gear_card import render_gear_board_png, render_gear_person_png
@@ -39,7 +39,12 @@ WHOLEGION_CHOICES = [
     app_commands.Choice(name='Ядро', value='ЯДРО'),
 ]
 
-# Fallback ranks if API unavailable (codes match site ladder)
+WARN_ROLE_IDS = {
+    '1486365790750900394': 'EL1',
+    '1473396475491782927': 'EL2',
+    '1473396551844892722': 'EL3',
+    '1473396670027792507': 'EL4',
+}
 RANK_FALLBACK = [
     ('N.D — Штрафник', 'N.D'),
     ('XI — Рядовой', 'XI'),
@@ -268,10 +273,18 @@ class LegionBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
+        intents.members = True
         super().__init__(command_prefix='!', intents=intents)
         self.api = api
         self.channel_ids = channel_ids
         self.guild_id = guild_id
+
+    @tasks.loop(minutes=2)
+    async def expire_warns_loop(self):
+        try:
+            await _api_call(self, self.api.balls_warn_expire)
+        except Exception:
+            log.exception('warn expire failed')
 
     async def setup_hook(self) -> None:
         if self.guild_id:
@@ -281,9 +294,31 @@ class LegionBot(commands.Bot):
         else:
             synced = await self.tree.sync()
         log.info('Slash commands synced: %s', len(synced))
+        if not self.expire_warns_loop.is_running():
+            self.expire_warns_loop.start()
 
     async def on_ready(self):
         log.info('Gateway ready as %s, watching %d channels', self.user, len(self.channel_ids))
+
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        try:
+            before_ids = {str(r.id) for r in before.roles}
+            after_ids = {str(r.id) for r in after.roles}
+            for rid in WARN_ROLE_IDS:
+                added = rid in after_ids and rid not in before_ids
+                removed = rid in before_ids and rid not in after_ids
+                if not added and not removed:
+                    continue
+                await _api_call(
+                    self,
+                    self.api.balls_warn_sync_role,
+                    actor_discord_id=str(after.id),
+                    target_discord_id=str(after.id),
+                    role_id=rid,
+                    added=added,
+                )
+        except Exception:
+            log.exception('warn role sync failed')
 
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -782,6 +817,155 @@ def register_slash(bot: LegionBot) -> None:
         current: str,
     ) -> list[app_commands.Choice[str]]:
         return await _rank_choices(bot, current)
+
+    @bot.tree.command(name='ranknew', description='Создать или править звание (порог баллов). ЯДРО / КМД / TERM.S')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(
+        code='Код звания, например XII или SGT',
+        title='Название (Рядовой, Капитан…)',
+        need='Необходимая сумма баллов + репутации',
+        group='Группа лестницы',
+        manual='Вручную, без авто-повышения',
+    )
+    async def ranknew_cmd(
+        interaction: discord.Interaction,
+        code: str,
+        title: str,
+        need: int = 0,
+        group: str = 'Прочее',
+        manual: bool = False,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        code = str(code or '').strip()
+        if not code:
+            await _term_fail(interaction, 'Укажите код звания.')
+            return
+        out = await _api_call(
+            bot,
+            bot.api.balls_rank_upsert,
+            actor_discord_id=str(interaction.user.id),
+            rank=code,
+            title=str(title or '').strip(),
+            need=int(need or 0),
+            group=str(group or '').strip(),
+            manual=bool(manual),
+        )
+        if not out.get('ok'):
+            await _term_fail(interaction, str(out.get('error') or 'Не сохранено'))
+            return
+        verb = 'создано' if out.get('created') else 'обновлено'
+        await _term_ok(
+            interaction,
+            title='ЗВАНИЕ',
+            extra=f'**{code}** — {title or code}\nпорог **{int(need or 0)}** · {verb}',
+            kind='review_ok',
+        )
+
+    @bot.tree.command(name='rankneed', description='Изменить порог баллов у звания')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(rank='Звание с сайта', need='Необходимая сумма баллов + репутации')
+    async def rankneed_cmd(interaction: discord.Interaction, rank: str, need: int):
+        await interaction.response.defer(ephemeral=True)
+        out = await _api_call(
+            bot,
+            bot.api.balls_rank_upsert,
+            actor_discord_id=str(interaction.user.id),
+            rank=str(rank or '').strip(),
+            need=int(need),
+        )
+        if not out.get('ok'):
+            await _term_fail(interaction, str(out.get('error') or 'Не сохранено'))
+            return
+        await _term_ok(
+            interaction,
+            title='ПОРОГ ЗВАНИЯ',
+            extra=f'**{rank}** → от **{int(need)}** баллов',
+            kind='review_ok',
+        )
+
+    @rankneed_cmd.autocomplete('rank')
+    async def rankneed_rank_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        return await _rank_choices(bot, current)
+
+    @bot.tree.command(name='rankdel', description='Удалить добавленное звание (не штатную лестницу)')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(rank='Код добавленного звания')
+    async def rankdel_cmd(interaction: discord.Interaction, rank: str):
+        await interaction.response.defer(ephemeral=True)
+        out = await _api_call(
+            bot,
+            bot.api.balls_rank_delete,
+            actor_discord_id=str(interaction.user.id),
+            rank=str(rank or '').strip(),
+        )
+        if not out.get('ok'):
+            await _term_fail(interaction, str(out.get('error') or 'Не удалено'))
+            return
+        await _term_ok(interaction, title='ЗВАНИЕ СНЯТО', extra=f'Удалено **{rank}**.', kind='review_no')
+
+    @bot.tree.command(name='warn', description='Выдать варн ролью Discord и записать на сайт')
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.describe(
+        player='Боец с /login',
+        level='Тип взыскания (роль на сервере)',
+        reason='Причина (попадёт на сайт)',
+        days='Срок в днях (для заключения по умолчанию 7)',
+    )
+    @app_commands.choices(level=[
+        app_commands.Choice(name='Замечание', value='EL1'),
+        app_commands.Choice(name='Выговор', value='EL2'),
+        app_commands.Choice(name='Строгий выговор', value='EL3'),
+        app_commands.Choice(name='Заключение', value='EL4'),
+    ])
+    async def warn_cmd(
+        interaction: discord.Interaction,
+        player: discord.Member,
+        level: app_commands.Choice[str],
+        reason: str,
+        days: int = 0,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        lv = level.value if level else 'EL1'
+        out = await _api_call(
+            bot,
+            bot.api.balls_warn_issue,
+            actor_discord_id=str(interaction.user.id),
+            target_discord_id=str(player.id),
+            level=lv,
+            text=str(reason or '').strip(),
+            days=int(days or 0),
+        )
+        if not out.get('ok'):
+            err = str(out.get('error') or 'Не выдано')
+            await _term_fail(interaction, err)
+            return
+        extra = f'{player.mention} · **{level.name}**\n{reason}'
+        if lv == 'EL4':
+            extra += '\nTRAITOR / HAVOC сняты на срок заключения, роли вернутся по истечении.'
+            d = int(days or 7)
+            extra += f'\nсрок **{d}** сут.'
+        await _term_ok(interaction, title='ВАРН', extra=extra, kind='review_no')
+        if interaction.channel is not None:
+            md = score_markdown(
+                title='ВЗЫСКАНИЕ',
+                name=player.display_name,
+                delta=level.name,
+                scores=lv,
+                reason=str(reason or ''),
+                actor=interaction.user.display_name,
+                mention=str(player.id),
+            )
+            await send_terminal(
+                interaction.channel,
+                markdown=md,
+                png=None,
+                filename='',
+                accent=CRT_RED,
+                mention_ids=[str(player.id)],
+            )
 
     @bot.tree.command(name='setnot', description='Каналы уведомлений сайта: отчёты, кодекс, операции, пейджер…')
     @app_commands.default_permissions(manage_roles=True)
